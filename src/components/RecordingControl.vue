@@ -23,7 +23,8 @@ export default {
       isRecording: false,
       isPaused: false,
       socket: null,
-      apiBaseUrl: 'https://aitongchuan-test.lan-bridge.cn/service',
+      // apiBaseUrl: 'https://aitongchuan-test.lan-bridge.cn/service',
+      apiBaseUrl: 'http://localhost:8080',
       mediaRecorder: null,
       audioContext: null,
       audioInput: null,
@@ -127,7 +128,7 @@ export default {
     },
 
     connectWebSocket() {
-      const wsUrl = `ws://${this.apiBaseUrl.replace('http://', '')}/record/${this.sessionId}/${this.index}`;
+      const wsUrl = this.apiBaseUrl.replace('http://', 'ws://').replace('https://', 'wss://') + `/record/${this.sessionId}/${this.index}`;
       this.socket = new WebSocket(wsUrl);
 
       this.socket.onopen = () => {
@@ -150,7 +151,8 @@ export default {
     },
 
     connectSubtitleSocket() {
-      const wsUrl = `ws://${this.apiBaseUrl.replace('http://', '')}/listen/${this.sessionId}/${this.index}`;
+      // 正则匹配替换
+      const wsUrl = this.apiBaseUrl.replace('http://', 'ws://').replace('https://', 'wss://') + `/listen/${this.sessionId}/${this.index}`;
       this.subtitleSocket = new WebSocket(wsUrl);
 
       this.subtitleSocket.onopen = () => {
