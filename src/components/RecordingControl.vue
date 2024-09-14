@@ -23,7 +23,7 @@ export default {
       isRecording: false,
       isPaused: false,
       socket: null,
-      apiBaseUrl: 'http://localhost:8080',
+      apiBaseUrl: 'https://aitongchuan-test.lan-bridge.cn/service',
       mediaRecorder: null,
       audioContext: null,
       audioInput: null,
