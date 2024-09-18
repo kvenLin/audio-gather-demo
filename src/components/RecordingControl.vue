@@ -23,8 +23,8 @@ export default {
       isRecording: false,
       isPaused: false,
       socket: null,
-      // apiBaseUrl: 'https://aitongchuan-test.lan-bridge.cn/service',
-      apiBaseUrl: 'http://localhost:8080',
+      apiBaseUrl: process.env.VUE_APP_API_BASE_URL || 'http://localhost:8080',
+      wsBaseUrl: process.env.VUE_APP_WS_BASE_URL || 'ws://localhost:8080',
       mediaRecorder: null,
       audioContext: null,
       audioInput: null,
@@ -43,6 +43,13 @@ export default {
       bufferThreshold: 4096, // 约 85ms 的音频数据 (48000 * 0.085)
       lastSendTime: 0,
       minSendInterval: 100, // 最小发送间隔（毫秒）
+      silenceThreshold: 3000,
+      silenceDuration: 0,
+      maxSilenceDuration: 60000, // 60秒，单位毫秒
+      isFirstSend: true,
+      lastAudioEnergyTime: 0,
+      isAudioStarted: false, // 新增：用于标记是否已经开始接收到音频数据
+      recordingStartTime: 0,
     }
   },
   computed: {
@@ -128,7 +135,7 @@ export default {
     },
 
     connectWebSocket() {
-      const wsUrl = this.apiBaseUrl.replace('http://', 'ws://').replace('https://', 'wss://') + `/record/${this.sessionId}/${this.index}`;
+      const wsUrl = `${this.wsBaseUrl}/record/${this.sessionId}/${this.index}`;
       this.socket = new WebSocket(wsUrl);
 
       this.socket.onopen = () => {
@@ -151,8 +158,7 @@ export default {
     },
 
     connectSubtitleSocket() {
-      // 正则匹配替换
-      const wsUrl = this.apiBaseUrl.replace('http://', 'ws://').replace('https://', 'wss://') + `/listen/${this.sessionId}/${this.index}`;
+      const wsUrl = `${this.wsBaseUrl}/listen/${this.sessionId}/${this.index}`;
       this.subtitleSocket = new WebSocket(wsUrl);
 
       this.subtitleSocket.onopen = () => {
@@ -199,23 +205,72 @@ export default {
       this.audioInput.connect(this.processor);
       this.processor.connect(this.audioContext.destination);
 
+      this.recordingStartTime = Date.now();
+
       this.processor.onaudioprocess = (e) => {
         if (this.isRecording && this.socket && this.socket.readyState === WebSocket.OPEN) {
           const leftChannel = e.inputBuffer.getChannelData(0);
           const rightChannel = e.inputBuffer.getChannelData(1);
           const interleaved = this.interleave(leftChannel, rightChannel);
           
-          this.audioBuffer = this.audioBuffer.concat(Array.from(interleaved));
-          
+          const audioEnergy = this.calculateAudioEnergy(interleaved);
           const currentTime = Date.now();
-          if (this.audioBuffer.length >= this.bufferThreshold && 
-              currentTime - this.lastSendTime >= this.minSendInterval) {
-            this.sendAudioData(this.audioBuffer);
-            this.audioBuffer = [];
-            this.lastSendTime = currentTime;
+
+          if (!this.isAudioStarted) {
+            this.isAudioStarted = true;
+            this.lastAudioEnergyTime = currentTime;
+          }
+
+          if (audioEnergy < this.silenceThreshold) {
+            this.silenceDuration += currentTime - this.lastAudioEnergyTime;
+          } else {
+            this.silenceDuration = 0;
+            this.isFirstSend = false;
+          }
+
+          this.lastAudioEnergyTime = currentTime;
+
+          if (this.silenceDuration >= this.maxSilenceDuration) {
+            if (this.isFirstSend) {
+              console.log('开始时持续60秒静音，停止录音且不发送数据');
+              this.stopRecording();
+            } else {
+              console.log('中途静音时间超过60秒，停止录音');
+              this.stopRecording();
+            }
+            return;
+          }
+
+          if (!this.isFirstSend) {
+            this.audioBuffer = this.audioBuffer.concat(Array.from(interleaved));
+            
+            if (this.audioBuffer.length >= this.bufferThreshold && 
+                currentTime - this.lastSendTime >= this.minSendInterval) {
+              this.sendAudioData(this.audioBuffer);
+              this.audioBuffer = [];
+              this.lastSendTime = currentTime;
+            }
+          } else if (currentTime - this.recordingStartTime >= this.maxSilenceDuration) {
+            console.log('开始时持续60秒静音，停止录音且不发送数据');
+            this.stopRecording();
           }
         }
       };
+    },
+
+    calculateAudioEnergy(buffer) {
+      const int16Buffer = this.floatTo16BitPCM(buffer);
+      const bytes = new Uint8Array(int16Buffer);
+      let sum = 0;
+      const count = bytes.length / 2;
+      for (let i = 0; i < bytes.length; i += 2) {
+        let sample = ((bytes[i + 1] << 8) | (bytes[i] & 0xFF));
+        if (sample > 32767) {
+          sample -= 65536;
+        }
+        sum += sample * sample;
+      }
+      return Math.sqrt(sum / count);
     },
 
     interleave(leftChannel, rightChannel) {
@@ -232,6 +287,11 @@ export default {
     },
 
     sendAudioData(audioData) {
+      if (this.isFirstSend) {
+        console.log('首次检测到声音，开始发送数据');
+        this.isFirstSend = false;
+      }
+      
       const compressedData = pako.gzip(this.floatTo16BitPCM(audioData));
       const base64Data = btoa(String.fromCharCode.apply(null, new Uint8Array(compressedData)));
       
@@ -270,6 +330,10 @@ export default {
     stopRecording() {
       this.isRecording = false;
       this.isPaused = false;
+      this.isAudioStarted = false; // 重置音频开始标记
+      this.silenceDuration = 0; // 重置静音持续时间
+      this.isFirstSend = true; // 重置第一次发送标识
+      this.recordingStartTime = 0; // 重置录音开始时间
       this.$emit('stop-recording');
       this.disconnectAll();
     },
