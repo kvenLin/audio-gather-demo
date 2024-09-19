@@ -39,11 +39,10 @@ export default {
       desiredDuration: 10, // 期望的音频时长（毫秒）
       channels: 2, // 双通道
       bufferSize: 512, // 修改：使用最接近 10ms 的 2 的幂值
-      subtitleSocket: null,
       bufferThreshold: 4096, // 约 85ms 的音频数据 (48000 * 0.085)
       lastSendTime: 0,
       minSendInterval: 100, // 最小发送间隔（毫秒）
-      silenceThreshold: 3000,// 静音阈值
+      silenceThreshold: 1000,// 静音阈值
       silenceDuration: 0,// 静音持续时间
       maxSilenceDuration: 60000, // 60秒，单位毫秒
       isFirstSend: true,
@@ -103,7 +102,6 @@ export default {
         this.isRecording = true;
         this.isPaused = false;
         this.connectWebSocket();
-        this.connectSubtitleSocket();
         await this.startAudioCapture();
         this.$emit('toggle-recording', this.isRecording);
       } else {
@@ -135,7 +133,7 @@ export default {
     },
 
     connectWebSocket() {
-      const wsUrl = `${this.wsBaseUrl}/record/${this.sessionId}/${this.index}`;
+      const wsUrl = `${this.wsBaseUrl}/recordSubtitle/${this.sessionId}/${this.index}`;
       this.socket = new WebSocket(wsUrl);
 
       this.socket.onopen = () => {
@@ -144,7 +142,14 @@ export default {
       };
 
       this.socket.onmessage = (event) => {
-        console.log('收到消息:', event.data);
+        const data = JSON.parse(event.data);
+        if (data.code === 0) {
+          // 处理字幕数据
+          this.$emit('subtitle-update', data);
+        } else {
+          // 处理其他类型的消息
+          console.log('收到消息:', data);
+        }
       };
 
       this.socket.onerror = (error) => {
@@ -154,30 +159,6 @@ export default {
       this.socket.onclose = () => {
         console.log('WebSocket连接已关闭');
         this.stopAudioCapture();
-      };
-    },
-
-    connectSubtitleSocket() {
-      const wsUrl = `${this.wsBaseUrl}/listen/${this.sessionId}/${this.index}`;
-      this.subtitleSocket = new WebSocket(wsUrl);
-
-      this.subtitleSocket.onopen = () => {
-        console.log('字幕 WebSocket 连接已建立');
-      };
-
-      this.subtitleSocket.onmessage = (event) => {
-        const data = JSON.parse(event.data);
-        if (data.code === 0) {
-          this.$emit('subtitle-update', data);
-        }
-      };
-
-      this.subtitleSocket.onerror = (error) => {
-        console.error('字幕 WebSocket 错误:', error);
-      };
-
-      this.subtitleSocket.onclose = () => {
-        console.log('字幕 WebSocket 连接已关闭');
       };
     },
 
@@ -357,10 +338,6 @@ export default {
       if (this.socket) {
         this.socket.close();
         this.socket = null;
-      }
-      if (this.subtitleSocket) {
-        this.subtitleSocket.close();
-        this.subtitleSocket = null;
       }
       if (this.stream) {
         this.stream.getTracks().forEach(track => track.stop());
