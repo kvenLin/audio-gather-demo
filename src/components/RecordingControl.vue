@@ -42,7 +42,7 @@ export default {
       bufferThreshold: 4096, // 约 85ms 的音频数据 (48000 * 0.085)
       lastSendTime: 0,
       minSendInterval: 100, // 最小发送间隔（毫秒）
-      silenceThreshold: 1000,// 静音阈值
+      silenceThreshold: 300,// 静音阈值
       silenceDuration: 0,// 静音持续时间
       maxSilenceDuration: 60000, // 60秒，单位毫秒
       isFirstSend: true,

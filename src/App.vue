@@ -9,13 +9,24 @@
           <label for="token">API Token:</label>
           <input type="text" id="token" v-model="token" @input="saveToken" placeholder="输入您的API Token">
         </div>
-        <LanguageSelector @change-language-pair="handleLanguagePairChange" />
-        <RecordingControl 
-          @toggle-recording="handleToggleRecording"
-          @stop-recording="handleStopRecording"
-          @subtitle-update="handleSubtitleUpdate"
-          :currentLanguagePair="currentLanguagePair"
-        />
+        <div class="mode-selector">
+          <el-radio-group v-model="currentMode">
+            <el-radio label="single">单账号模式</el-radio>
+            <el-radio label="batch">批量账号模式</el-radio>
+          </el-radio-group>
+        </div>
+        <template v-if="currentMode === 'single'">
+          <LanguageSelector @change-language-pair="handleLanguagePairChange" />
+          <RecordingControl 
+            @toggle-recording="handleToggleRecording"
+            @stop-recording="handleStopRecording"
+            @subtitle-update="handleSubtitleUpdate"
+            :currentLanguagePair="currentLanguagePair"
+          />
+        </template>
+        <template v-else>
+          <BatchLogin />
+        </template>
       </div>
       <SubtitleDisplay ref="subtitleDisplay" />
     </main>
@@ -26,18 +37,21 @@
 import RecordingControl from './components/RecordingControl.vue'
 import LanguageSelector from './components/LanguageSelector.vue'
 import SubtitleDisplay from './components/SubtitleDisplay.vue'
+import BatchLogin from './components/BatchLogin.vue'
 
 export default {
   name: 'App',
   components: {
     RecordingControl,
     LanguageSelector,
-    SubtitleDisplay
+    SubtitleDisplay,
+    BatchLogin
   },
   data() {
     return {
       currentLanguagePair: 'enus-zhcn',
-      token: ''
+      token: '',
+      currentMode: 'single' // 默认单账号模式
     }
   },
   created() {
@@ -110,6 +124,7 @@ main {
   flex-direction: column;
   gap: 20px;
   margin-bottom: 20px;
+  padding: 20px;
 }
 
 .token-input {
@@ -126,5 +141,10 @@ main {
   border: 1px solid #ccc;
   border-radius: 3px;
   font-size: 16px;
+}
+
+.mode-selector {
+  margin: 20px 0;
+  text-align: center;
 }
 </style>
