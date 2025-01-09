@@ -28,10 +28,17 @@
       <div class="accounts-list">
         <el-table :data="loginResults" style="width: 100%" :header-cell-style="{background:'#f5f7fa',color:'#606266'}" :cell-style="{padding:'5px'}">
           <el-table-column prop="account" label="账号" width="180" />
-          <el-table-column prop="status" label="状态">
+          <el-table-column prop="status" label="登录状态">
             <template #default="scope">
               <el-tag :type="scope.row.status === '成功' ? 'success' : 'danger'">
                 {{ scope.row.status }}
+              </el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column prop="connectionStatus" label="连接状态">
+            <template #default="scope">
+              <el-tag :type="getConnectionStatusType(scope.row.account)">
+                {{ getConnectionStatus(scope.row.account) }}
               </el-tag>
             </template>
           </el-table-column>
@@ -80,30 +87,24 @@ export default {
       lastAudioEnergyTimes: new Map(),
       recordingStartTimes: new Map(),
       silenceDurations: new Map(),
+      connectionStatuses: new Map(),
+      activeConnections: [], // 新增：用于追踪活跃的连接
       successLoginCount: 0,
       totalAccounts: 0,
-      activeRecordingCount: 0
     }
   },
   computed: {
-    // 添加其他计算属性...
+    activeRecordingCount() {
+      return this.activeConnections.length;
+    }
   },
   watch: {
-    // 监听登录结果变化，更新成功登录人数
     loginResults: {
       handler(newResults) {
         this.successLoginCount = newResults.filter(result => result.status === '成功').length
         this.totalAccounts = newResults.length
       },
       deep: true
-    },
-    // 监听WebSocket连接数量变化
-    wsConnections: {
-      handler() {
-        this.activeRecordingCount = this.wsConnections.size
-      },
-      deep: true,
-      immediate: true
     }
   },
   methods: {
@@ -149,37 +150,41 @@ export default {
       const accounts = this.parseAccounts()
 
       for (const { account, password } of accounts) {
-        const result = await this.login(account, password)
+        const loginResult = await this.login(account, password)
         this.loginResults.push({
           account,
-          status: result.success ? '成功' : '失败',
-          message: result.message
+          status: loginResult.success ? '成功' : '失败',
+          message: loginResult.message
         })
+        this.connectionStatuses.set(account, '未连接') // 初始化连接状态
       }
       this.isLoading = false
     },
 
     async handleStartAll() {
+      if (this.isStarting) return
       this.isStarting = true
-      this.activeRecordingCount = 0 // 重置计数
       
       try {
         console.log('开始获取音频流...')
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
         console.log('成功获取音频流:', stream.getAudioTracks()[0].label)
         
-        for (const [account, token] of this.tokens) {
+        // 清空活跃连接列表
+        this.activeConnections = []
+        
+        for (const result of this.loginResults.filter(result => result.status === '成功')) {
           try {
-            console.log(`[${account}] 准备建立连接...`)
+            console.log(`[${result.account}] 准备建立连接...`)
             // 添加延迟，避免连接过于频繁
             await new Promise(resolve => setTimeout(resolve, 1000))
             
             // 1. 调用开启同传的接口获取WebSocket连接信息
-            console.log(`[${account}] 调用开启同传接口...`)
+            console.log(`[${result.account}] 调用开启同传接口...`)
             const response = await fetch(`${this.apiBaseUrl}/api/audio/action`, {
               method: 'POST',
               headers: {
-                'Authorization': token,
+                'Authorization': this.tokens.get(result.account),
                 'Content-Type': 'application/json'
               },
               body: JSON.stringify({
@@ -191,7 +196,7 @@ export default {
             })
 
             const data = await response.json()
-            console.log(`[${account}] 开启同传接口返回:`, data)
+            console.log(`[${result.account}] 开启同传接口返回:`, data)
             
             if (data.isSuccess) {
               const sessionId = data.data.sessionId
@@ -199,7 +204,7 @@ export default {
               
               // 2. 建立WebSocket连接
               const wsUrl = `${this.wsBaseUrl}/recordSubtitle/${sessionId}/${index}`
-              console.log(`[${account}] 开始建立WebSocket连接: ${wsUrl}`)
+              console.log(`[${result.account}] 开始建立WebSocket连接: ${wsUrl}`)
               const ws = new WebSocket(wsUrl)
               
               // 3. 等待WebSocket连接建立
@@ -212,10 +217,13 @@ export default {
                   clearTimeout(timeout)
                   resolve()
                   
-                  console.log(`[${account}] WebSocket连接成功建立`)
-                  // 先设置WebSocket连接，这样watch可以监听到变化
-                  this.wsConnections.set(account, ws)
-                  this.$forceUpdate() // 强制更新以触发watch
+                  console.log(`[${result.account}] WebSocket连接成功建立`)
+                  this.wsConnections.set(result.account, ws)
+                  this.connectionStatuses.set(result.account, '已连接')
+                  if (!this.activeConnections.includes(result.account)) {
+                    this.activeConnections.push(result.account) // 添加到活跃连接数组
+                  }
+                  this.$forceUpdate()
                   
                   // 发送初始化数据
                   const payload = {
@@ -228,17 +236,17 @@ export default {
                     sessionId: sessionId,
                     ts: Date.now()
                   }
-                  console.log(`[${account}] 发送初始化数据:`, payload)
+                  console.log(`[${result.account}] 发送初始化数据:`, payload)
                   ws.send(JSON.stringify(payload))
                   
                   // 初始化音频处理
-                  console.log(`[${account}] 开始初始化音频处理...`)
-                  this.initAudioProcessing(account, stream, sessionId, index)
+                  console.log(`[${result.account}] 开始初始化音频处理...`)
+                  this.initAudioProcessing(result.account, stream, sessionId, index)
                 }
 
                 ws.onerror = (error) => {
                   clearTimeout(timeout)
-                  console.error(`[${account}] WebSocket连接错误:`, error)
+                  console.error(`[${result.account}] WebSocket连接错误:`, error)
                   reject(error)
                 }
               })
@@ -246,21 +254,21 @@ export default {
               ws.onmessage = (event) => {
                 try {
                   const data = JSON.parse(event.data)
-                  console.log(`[${account}] 收到WebSocket消息:`, data)
+                  console.log(`[${result.account}] 收到WebSocket消息:`, data)
                   if (data.code === 0) {
-                    console.log(`[${account}] 收到字幕:`, data.data)
+                    console.log(`[${result.account}] 收到字幕:`, data.data)
                   } else {
-                    console.warn(`[${account}] 收到非字幕消息:`, data)
+                    console.warn(`[${result.account}] 收到非字幕消息:`, data)
                   }
                 } catch (error) {
-                  console.error(`[${account}] 解析WebSocket消息失败:`, error, event.data)
+                  console.error(`[${result.account}] 解析WebSocket消息失败:`, error, event.data)
                 }
               }
 
               ws.onerror = (error) => {
-                console.error(`[${account}] WebSocket错误:`, error)
+                console.error(`[${result.account}] WebSocket错误:`, error)
                 this.loginResults = this.loginResults.map(result => {
-                  if (result.account === account) {
+                  if (result.account === result.account) {
                     result.status = '失败'
                     result.message = 'WebSocket连接错误'
                   }
@@ -269,21 +277,27 @@ export default {
               }
 
               ws.onclose = (event) => {
-                console.log(`[${account}] WebSocket连接关闭:`, {
+                console.log(`[${result.account}] WebSocket连接关闭:`, {
                   code: event.code,
                   reason: event.reason,
                   wasClean: event.wasClean
                 })
-                this.stopAudioProcessing(account)
+                this.stopAudioProcessing(result.account)
+                const index = this.activeConnections.indexOf(result.account)
+                if (index > -1) {
+                  this.activeConnections.splice(index, 1) // 从活跃连接数组中移除
+                }
+                this.connectionStatuses.set(result.account, '已断开')
+                this.$forceUpdate()
               }
 
             } else {
               throw new Error(`获取WebSocket连接信息失败: ${data.msg || '未知错误'}`)
             }
           } catch (error) {
-            console.error(`[${account}] 开启同传失败:`, error)
+            console.error(`[${result.account}] 开启同传失败:`, error)
             this.loginResults = this.loginResults.map(result => {
-              if (result.account === account) {
+              if (result.account === result.account) {
                 result.status = '失败'
                 result.message = error.message
               }
@@ -460,44 +474,88 @@ export default {
     },
 
     stopAudioProcessing(account) {
-      console.log(`[${account}] 开始停止音频处理...`)
-      const processor = this.processors.get(account)
-      const audioInput = this.audioInputs.get(account)
-      const audioContext = this.audioContexts.get(account)
-      const ws = this.wsConnections.get(account)
-      
-      if (processor) {
-        processor.disconnect()
-        this.processors.delete(account)
-        console.log(`[${account}] 已断开处理器连接`)
+      try {
+        console.log(`[${account}] 开始停止音频处理...`)
+        
+        // 停止音频处理器
+        const processor = this.processors.get(account)
+        if (processor) {
+          processor.disconnect()
+          this.processors.delete(account)
+          console.log(`[${account}] 已断开处理器连接`)
+        }
+
+        // 停止音频输入
+        const audioInput = this.audioInputs.get(account)
+        if (audioInput) {
+          audioInput.disconnect()
+          this.audioInputs.delete(account)
+          console.log(`[${account}] 已断开音频输入连接`)
+        }
+
+        // 关闭音频上下文
+        const audioContext = this.audioContexts.get(account)
+        if (audioContext && audioContext.state !== 'closed') {
+          audioContext.close()
+          this.audioContexts.delete(account)
+          console.log(`[${account}] 已关闭音频上下文`)
+        }
+
+        // 关闭WebSocket连接
+        const ws = this.wsConnections.get(account)
+        if (ws && ws.readyState !== WebSocket.CLOSED) {
+          ws.close()
+          this.wsConnections.delete(account)
+          console.log(`[${account}] 已关闭WebSocket连接`)
+        }
+
+        // 停止音频流
+        const stream = this.streams.get(account)
+        if (stream) {
+          stream.getTracks().forEach(track => {
+            track.stop()
+            console.log(`[${account}] 已停止音频轨道:`, track.label)
+          })
+          this.streams.delete(account)
+        }
+
+        // 清理其他资源
+        this.audioBuffers.delete(account)
+        this.lastSendTimes.delete(account)
+        this.isFirstSends.delete(account)
+        this.lastAudioEnergyTimes.delete(account)
+        this.recordingStartTimes.delete(account)
+        this.silenceDurations.delete(account)
+
+        // 更新状态
+        const index = this.activeConnections.indexOf(account)
+        if (index > -1) {
+          this.activeConnections.splice(index, 1)
+        }
+        this.connectionStatuses.set(account, '已断开')
+        this.$forceUpdate()
+
+        console.log(`[${account}] 音频处理停止完成`)
+      } catch (error) {
+        console.error(`[${account}] 停止音频处理时出错:`, error)
       }
-      
-      if (audioInput) {
-        audioInput.disconnect()
-        this.audioInputs.delete(account)
-        console.log(`[${account}] 已断开音频输入连接`)
+    },
+
+    getConnectionStatus(account) {
+      const status = this.connectionStatuses.get(account);
+      return status || '未连接';
+    },
+
+    getConnectionStatusType(account) {
+      const status = this.getConnectionStatus(account);
+      switch(status) {
+        case '已连接':
+          return 'success';
+        case '已断开':
+          return 'danger';
+        default:
+          return 'info';
       }
-      
-      if (audioContext) {
-        audioContext.close()
-        this.audioContexts.delete(account)
-        console.log(`[${account}] 已关闭音频上下文`)
-      }
-      
-      if (ws) {
-        ws.close()
-        this.wsConnections.delete(account)
-        console.log(`[${account}] 已关闭WebSocket连接`)
-      }
-      
-      this.streams.delete(account)
-      this.audioBuffers.delete(account)
-      this.lastSendTimes.delete(account)
-      this.isFirstSends.delete(account)
-      this.lastAudioEnergyTimes.delete(account)
-      this.recordingStartTimes.delete(account)
-      this.silenceDurations.delete(account)
-      console.log(`[${account}] 音频处理停止完成`)
     },
 
     handleLanguageChange(languagePair) {
@@ -505,9 +563,20 @@ export default {
     },
 
     closeAllConnections() {
-      for (const [account] of this.wsConnections) {
+      console.log('开始关闭所有连接...')
+      // 获取所有需要关闭的账号
+      const accounts = Array.from(this.wsConnections.keys())
+      
+      // 逐个关闭连接
+      accounts.forEach(account => {
+        console.log(`正在关闭账号 ${account} 的连接`)
         this.stopAudioProcessing(account)
-      }
+      })
+
+      // 清空活跃连接数组
+      this.activeConnections = []
+      this.$forceUpdate()
+      console.log('所有连接已关闭')
     }
   }
 }
