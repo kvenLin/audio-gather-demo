@@ -120,7 +120,7 @@ export default {
 
     async login(account, password) {
       try {
-        const response = await fetch('https://shuyilogincommon_test.lan-bridge.cn/login', {
+        const response = await fetch(process.env.VUE_APP_LOGIN_SERVICE_URL, {
           method: 'POST',
           headers: {
             'Useraccount': account,
